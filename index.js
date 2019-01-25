@@ -2,7 +2,7 @@ var equals = require('buffer-equals')
 var low = require('last-one-wins')
 var remove = require('unordered-array-remove')
 var set = require('unordered-set')
-var merkle = require('merkle-tree-stream/generator')
+var merkle = require('./packages/react-native-merkle-tree-stream/generator')
 var flat = require('flat-tree')
 var bulk = require('bulk-write-stream')
 var from = require('from2')
@@ -16,7 +16,7 @@ var bitfield = require('./lib/bitfield')
 var sparseBitfield = require('sparse-bitfield')
 var treeIndex = require('./lib/tree-index')
 var storage = require('./lib/storage')
-var crypto = require('hypercore-crypto')
+var crypto = require('./packages/react-native-hypercore-crypto')
 var nextTick = require('process-nextick-args')
 var bufferFrom = require('buffer-from')
 var bufferAlloc = require('buffer-alloc-unsafe')
@@ -47,14 +47,16 @@ function Feed (createStorage, key, opts) {
   var secretKey = opts.secretKey || null
   if (typeof secretKey === 'string') secretKey = bufferFrom(secretKey, 'hex')
 
-  this.id = opts.id || crypto.randomBytes(32)
+  // needed to be fulfilled
+  this.id = opts.id || /* async */ crypto.randomBytes(32)
+  this.key = key || opts.key || null
+  this.discoveryKey = this.key && /* async */ crypto.discoveryKey(this.key)
+
   this.live = opts.live !== false
   this.sparse = !!opts.sparse
   this.length = 0
   this.byteLength = 0
   this.maxRequests = opts.maxRequests || 16
-  this.key = key || opts.key || null
-  this.discoveryKey = this.key && crypto.discoveryKey(this.key)
   this.secretKey = secretKey
   this.bitfield = null
   this.tree = null
@@ -100,7 +102,9 @@ function Feed (createStorage, key, opts) {
   }
 
   function work (values, cb) {
-    if (!self._merkle) return self._reloadMerkleStateBeforeAppend(work, values, cb)
+    if (!self._merkle) {
+      return self._reloadMerkleStateBeforeAppend(work, values, cb)
+    }
     self._append(values, cb)
   }
 
@@ -171,7 +175,7 @@ Feed.prototype.update = function (len, cb) {
 
   var self = this
 
-  this.ready(function (err) {
+  this._ready(function (err) {
     if (err) return cb(err)
     if (len === -1) len = self.length + 1
     if (self.length >= len) return cb(null)
@@ -199,6 +203,7 @@ Feed.prototype._writeStateReloader = function (cb) {
   }
 }
 
+// Passing async crypto into another module
 Feed.prototype._reloadMerkleState = function (cb) {
   var self = this
 
@@ -220,118 +225,153 @@ Feed.prototype._open = function (cb) {
   var self = this
   var generatedKey = false
 
-  // TODO: clean up the duplicate code below ...
+  var resolvableId = Promise.resolve(this.id)
+  var resolvableIdDiscoveryKey = Promise.resolve(this.discoveryKey)
 
-  this._storage.openKey(function (_, key) {
-    if (key && !self._overwrite && !self.key) self.key = key
+  Promise.all([resolvableId, resolvableIdDiscoveryKey]).then((resolved) => {
+    self.id = resolved[0]
+    self.discoveryKey = resolved[1]
 
-    if (!self.key && self.live) {
-      var keyPair = crypto.keyPair()
-      self.secretKey = keyPair.secretKey
-      self.key = keyPair.publicKey
-      generatedKey = true
-    }
+    // TODO: clean up the duplicate code below ...
 
-    self.discoveryKey = self.key && crypto.discoveryKey(self.key)
-    self._storage.open({key: self.key, discoveryKey: self.discoveryKey}, onopen)
-  })
-
-  function onopen (err, state) {
-    if (err) return cb(err)
-
-    // if no key but we have data do a bitfield reset since we cannot verify the data.
-    if (!state.key && state.bitfield.length) {
-      self._overwrite = true
-    }
-
-    if (self._overwrite) {
-      state.bitfield = []
-      state.key = state.secretKey = null
-    }
-
-    self.bitfield = bitfield(state.bitfieldPageSize, state.bitfield)
-    self.tree = treeIndex(self.bitfield.tree)
-    self.length = self.tree.blocks()
-    self._seq = self.length
-
-    if (state.key && self.key && !equals(state.key, self.key)) {
-      return cb(new Error('Another hypercore is stored here'))
-    }
-
-    if (state.key) self.key = state.key
-    if (state.secretKey) self.secretKey = state.secretKey
-
-    // verify key and secretKey go together
-    if (self.key && self.secretKey) {
-      var challenge = bufferAlloc(0)
-      if (!crypto.verify(challenge, crypto.sign(challenge, self.secretKey), self.key)) {
-        return cb(new Error('Key and secret do not match'))
-      }
-    }
-
-    if (!self.length) return onsignature(null, null)
-    self._storage.getSignature(self.length - 1, onsignature)
-
-    function onsignature (_, sig) {
-      if (self.length) self.live = !!sig
-
-      if ((generatedKey || !self.key) && !self._createIfMissing) {
-        return cb(new Error('No hypercore is stored here'))
-      }
+    self._storage.openKey(function (_, key) {
+      if (key && !self._overwrite && !self.key) self.key = key
 
       if (!self.key && self.live) {
-        var keyPair = crypto.keyPair()
-        self.secretKey = keyPair.secretKey
-        self.key = keyPair.publicKey
+        crypto.keyPair().then((keyPair) => {
+          self.secretKey = keyPair.secretKey
+          self.key = keyPair.publicKey
+          generatedKey = true
+
+          openStorage()
+        })
+      } else {
+        openStorage()
+      }
+    })
+
+    function openStorage () {
+      crypto.discoveryKey(self.key).then((discoveryKey) => {
+        self.discoveryKey = discoveryKey
+        self._storage.open({key: self.key, discoveryKey: self.discoveryKey}, onopen)
+      })
+    }
+
+    function onopen (err, state) {
+      if (err) return cb(err)
+
+      // if no key but we have data do a bitfield reset since we cannot verify the data.
+      if (!state.key && state.bitfield.length) {
+        self._overwrite = true
       }
 
-      var writable = !!self.secretKey || self.key === null
-
-      if (!writable && self.writable) return cb(new Error('Feed is not writable'))
-      self.writable = writable
-      self.discoveryKey = self.key && crypto.discoveryKey(self.key)
-
-      if (self._storeSecretKey && !self.secretKey) {
-        self._storeSecretKey = false
+      if (self._overwrite) {
+        state.bitfield = []
+        state.key = state.secretKey = null
       }
 
-      var shouldWriteKey = generatedKey || !safeBufferEquals(self.key, state.key)
-      var shouldWriteSecretKey = self._storeSecretKey && (generatedKey || !safeBufferEquals(self.secretKey, state.secretKey))
+      self.bitfield = bitfield(state.bitfieldPageSize, state.bitfield)
+      self.tree = treeIndex(self.bitfield.tree)
+      self.length = self.tree.blocks()
+      self._seq = self.length
 
-      var missing = 1 +
-        (shouldWriteKey ? 1 : 0) +
-        (shouldWriteSecretKey ? 1 : 0) +
-        (self._overwrite ? 1 : 0)
-      var error = null
-
-      if (shouldWriteKey) self._storage.key.write(0, self.key, done)
-      if (shouldWriteSecretKey) self._storage.secretKey.write(0, self.secretKey, done)
-
-      if (self._overwrite) { // TODO: support storage.resize for this instead
-        self._storage.putBitfield(0, state.bitfield, done)
+      if (state.key && self.key && !equals(state.key, self.key)) {
+        return cb(new Error('Another hypercore is stored here'))
       }
 
-      done(null)
+      if (state.key) self.key = state.key
+      if (state.secretKey) self.secretKey = state.secretKey
 
-      function done (err) {
-        if (err) error = err
-        if (--missing) return
-        if (error) return cb(error)
-        self._roots(self.length, onroots)
+      // verify key and secretKey go together
+      if (self.key && self.secretKey) {
+        var challenge = bufferAlloc(0)
+
+        crypto.sign(challenge, self.secretKey).then((sign) => {
+          crypto.verify(challenge, sign, self.key).then((verified) => {
+            if (!verified) {
+              return cb(new Error('Key and secret do not match'))
+            }
+
+            getStorageSignature()
+          })
+        })
+      } else {
+        getStorageSignature()
       }
 
-      function onroots (err, roots) {
-        if (err) return cb(err)
+      function getStorageSignature () {
+        if (!self.length) return onsignature(null, null)
+        self._storage.getSignature(self.length - 1, (_, sig) => {
+          onsignature(_, sig)
+        })
+      }
 
-        self._merkle = merkle(crypto, roots)
-        self.byteLength = roots.reduce(addSize, 0)
-        self.opened = true
-        self.emit('ready')
+      async function onsignature (_, sig) {
+        if (self.length) self.live = !!sig
 
-        cb(null)
+        if ((generatedKey || !self.key) && !self._createIfMissing) {
+          return cb(new Error('No hypercore is stored here'))
+        }
+
+        if (!self.key && self.live) {
+          var keyPair = await crypto.keyPair()
+          self.secretKey = keyPair.secretKey
+          self.key = keyPair.publicKey
+        }
+
+        var writable = !!self.secretKey || self.key === null
+
+        if (!writable && self.writable) {
+          return cb(new Error('Feed is not writable'))
+        }
+
+        self.writable = writable
+        if (self.key) {
+          self.discoveryKey = await crypto.discoveryKey(self.key)
+        }
+
+        if (self._storeSecretKey && !self.secretKey) {
+          self._storeSecretKey = false
+        }
+
+        var shouldWriteKey = generatedKey || !safeBufferEquals(self.key, state.key)
+        var shouldWriteSecretKey = self._storeSecretKey && (generatedKey || !safeBufferEquals(self.secretKey, state.secretKey))
+
+        var missing = 1 +
+          (shouldWriteKey ? 1 : 0) +
+          (shouldWriteSecretKey ? 1 : 0) +
+          (self._overwrite ? 1 : 0)
+        var error = null
+
+        if (shouldWriteKey) self._storage.key.write(0, self.key, done)
+        if (shouldWriteSecretKey) self._storage.secretKey.write(0, self.secretKey, done)
+
+        if (self._overwrite) { // TODO: support storage.resize for this instead
+          self._storage.putBitfield(0, state.bitfield, done)
+        }
+
+        done(null)
+
+        function done (err) {
+          if (err) error = err
+          if (--missing) return
+          if (error) return cb(error)
+          self._roots(self.length, onroots)
+        }
+
+        function onroots (err, roots) {
+          if (err) return cb(err)
+
+          self._merkle = merkle(crypto, roots)
+          self.byteLength = roots.reduce(addSize, 0)
+          self.opened = true
+          self.emit('ready')
+
+          cb(null)
+        }
       }
     }
-  }
+  })
 }
 
 Feed.prototype.download = function (range, cb) {
@@ -548,13 +588,15 @@ Feed.prototype.verify = function (index, signature, cb) {
   this.rootHashes(index, function (err, roots) {
     if (err) return cb(err)
 
-    var checksum = crypto.tree(roots)
-
-    if (!crypto.verify(checksum, signature, self.key)) {
-      cb(new Error('Signature verification failed'))
-    } else {
-      cb(null, true)
-    }
+    crypto.tree(roots).then((checksum) => {
+      crypto.verify(checksum, signature, self.key).then((verified) => {
+        if (!verified) {
+          cb(new Error('Signature verification failed'))
+        } else {
+          cb(null, true)
+        }
+      })
+    })
   })
 }
 
@@ -792,39 +834,47 @@ Feed.prototype._writeDone = function (index, data, nodes, from, cb) {
 Feed.prototype._verifyAndWrite = function (index, data, proof, localNodes, trustedNode, from, cb) {
   var visited = []
   var remoteNodes = proof.nodes
-  var top = data ? new storage.Node(2 * index, crypto.data(data), data.length) : remoteNodes.shift()
+  var top
 
-  // check if we already have the hash for this node
-  if (verifyNode(trustedNode, top)) {
-    this._write(index, data, visited, null, from, cb)
-    return
-  }
-
-  // keep hashing with siblings until we reach or trusted node
-  while (true) {
-    var node = null
-    var next = flat.sibling(top.index)
-
-    if (remoteNodes.length && remoteNodes[0].index === next) {
-      node = remoteNodes.shift()
-      visited.push(node)
-    } else if (localNodes.length && localNodes[0].index === next) {
-      node = localNodes.shift()
+  return (async () => {
+    if (data) {
+      top = new storage.Node(2 * index, await crypto.data(data), data.length)
     } else {
-      // we cannot create another parent, i.e. these nodes must be roots in the tree
-      this._verifyRootsAndWrite(index, data, top, proof, visited, from, cb)
-      return
+      top = remoteNodes.shift()
     }
 
-    visited.push(top)
-    top = new storage.Node(flat.parent(top.index), crypto.parent(top, node), top.size + node.size)
-
-    // the tree checks out, write the data and the visited nodes
+    // check if we already have the hash for this node
     if (verifyNode(trustedNode, top)) {
       this._write(index, data, visited, null, from, cb)
       return
     }
-  }
+
+    // keep hashing with siblings until we reach or trusted node
+    while (true) {
+      var node = null
+      var next = flat.sibling(top.index)
+
+      if (remoteNodes.length && remoteNodes[0].index === next) {
+        node = remoteNodes.shift()
+        visited.push(node)
+      } else if (localNodes.length && localNodes[0].index === next) {
+        node = localNodes.shift()
+      } else {
+        // we cannot create another parent, i.e. these nodes must be roots in the tree
+        this._verifyRootsAndWrite(index, data, top, proof, visited, from, cb)
+        return
+      }
+
+      visited.push(top)
+      top = new storage.Node(flat.parent(top.index), await crypto.parent(top, node), top.size + node.size)
+
+      // the tree checks out, write the data and the visited nodes
+      if (verifyNode(trustedNode, top)) {
+        this._write(index, data, visited, null, from, cb)
+        return
+      }
+    }
+  })()
 }
 
 Feed.prototype._verifyRootsAndWrite = function (index, data, top, proof, nodes, from, cb) {
@@ -836,39 +886,42 @@ Feed.prototype._verifyRootsAndWrite = function (index, data, top, proof, nodes, 
   this._getRootsToVerify(verifiedBy, top, remoteNodes, function (err, roots, extraNodes) {
     if (err) return cb(err)
 
-    var checksum = crypto.tree(roots)
-    var signature = null
+    return (async () => {
+      var checksum = await crypto.tree(roots)
+      var signature = null
 
-    if (self.length && self.live && !proof.signature) {
-      return cb(new Error('Remote did not include a signature'))
-    }
-
-    if (proof.signature) { // check signaturex
-      if (!crypto.verify(checksum, proof.signature, self.key)) {
-        return cb(new Error('Remote signature could not be verified'))
+      if (self.length && self.live && !proof.signature) {
+        return cb(new Error('Remote did not include a signature'))
       }
 
-      signature = {index: verifiedBy / 2 - 1, signature: proof.signature}
-    } else { // check tree root
-      if (!equals(checksum, self.key)) {
-        return cb(new Error('Remote checksum failed'))
+      if (proof.signature) { // check signaturex
+        var verified = await crypto.verify(checksum, proof.signature, self.key)
+        if (!verified) {
+          return cb(new Error('Remote signature could not be verified'))
+        }
+
+        signature = {index: verifiedBy / 2 - 1, signature: proof.signature}
+      } else { // check tree root
+        if (!equals(checksum, self.key)) {
+          return cb(new Error('Remote checksum failed'))
+        }
       }
-    }
 
-    self.live = !!signature
+      self.live = !!signature
 
-    var length = verifiedBy / 2
-    if (length > self.length) {
-      // TODO: only emit this after the info has been flushed to storage
-      if (self.writable) self._merkle = null // We need to reload merkle state now
-      self.length = length
-      self._seq = length
-      self.byteLength = roots.reduce(addSize, 0)
-      if (self._synced) self._synced.seek(0, self.length)
-      self.emit('append')
-    }
+      var length = verifiedBy / 2
+      if (length > self.length) {
+        // TODO: only emit this after the info has been flushed to storage
+        if (self.writable) self._merkle = null // We need to reload merkle state now
+        self.length = length
+        self._seq = length
+        self.byteLength = roots.reduce(addSize, 0)
+        if (self._synced) self._synced.seek(0, self.length)
+        self.emit('append')
+      }
 
-    self._write(index, data, nodes.concat(extraNodes), signature, from, cb)
+      self._write(index, data, nodes.concat(extraNodes), signature, from, cb)
+    })()
   })
 }
 
@@ -1079,11 +1132,13 @@ Feed.prototype.createReadStream = function (opts) {
 
 // TODO: when calling finalize on a live feed write an END_OF_FEED block (length === 0?)
 Feed.prototype.finalize = function (cb) {
-  if (!this.key) {
-    this.key = crypto.tree(this._merkle.roots)
-    this.discoveryKey = crypto.discoveryKey(this.key)
-  }
-  this._storage.key.write(0, this.key, cb)
+  return (async () => {
+    if (!this.key) {
+      this.key = await crypto.tree(this._merkle.roots)
+      this.discoveryKey = await crypto.discoveryKey(this.key)
+    }
+    this._storage.key.write(0, this.key, cb)
+  })()
 }
 
 Feed.prototype.append = function (batch, cb) {
@@ -1160,47 +1215,51 @@ Feed.prototype._append = function (batch, cb) {
 
   if (!pending) return cb()
 
-  for (var i = 0; i < batch.length; i++) {
-    var data = this._codec.encode(batch[i])
-    var nodes = this._merkle.next(data)
-
-    if (this._indexing) done(null)
-    else this._storage.data.write(this.byteLength + offset, data, done)
-
-    if (this.live && i === batch.length - 1) {
-      var sig = crypto.sign(crypto.tree(this._merkle.roots), this.secretKey)
-      this._storage.putSignature(this.length + i, sig, done)
-    }
-
-    pending += nodes.length
-    offset += data.length
-
-    for (var j = 0; j < nodes.length; j++) {
-      var node = nodes[j]
-      this._storage.putNode(node.index, node, done)
-    }
-  }
-
-  function done (err) {
-    if (err) error = err
-    if (--pending) return
-    if (error) return cb(error)
-
-    var start = self.length
-
-    // TODO: only emit append and update length / byteLength after the info has been flushed to storage
-    self.byteLength += offset
+  // it has to be returned or consumed in some kind of way
+  // or `var a = (async () => {`, otherwise it will be ignored completely
+  return (async () => {
     for (var i = 0; i < batch.length; i++) {
-      self.bitfield.set(self.length, true)
-      self.tree.set(2 * self.length++)
+      var data = this._codec.encode(batch[i])
+      var nodes = await this._merkle.next(data)
+
+      if (this._indexing) done(null)
+      else this._storage.data.write(this.byteLength + offset, data, done)
+
+      if (this.live && i === batch.length - 1) {
+        var sig = await crypto.sign(await crypto.tree(this._merkle.roots), this.secretKey)
+        this._storage.putSignature(this.length + i, sig, done)
+      }
+
+      pending += nodes.length
+      offset += data.length
+
+      for (var j = 0; j < nodes.length; j++) {
+        var node = nodes[j]
+        this._storage.putNode(node.index, node, done)
+      }
     }
-    self.emit('append')
 
-    var message = self.length - start > 1 ? {start: start, length: self.length - start} : {start: start}
-    if (self.peers.length) self._announce(message)
+    function done (err) {
+      if (err) error = err
+      if (--pending) return
+      if (error) return cb(error)
 
-    self._sync(null, cb)
-  }
+      var start = self.length
+
+      // TODO: only emit append and update length / byteLength after the info has been flushed to storage
+      self.byteLength += offset
+      for (var i = 0; i < batch.length; i++) {
+        self.bitfield.set(self.length, true)
+        self.tree.set(2 * self.length++)
+      }
+      self.emit('append')
+
+      var message = self.length - start > 1 ? {start: start, length: self.length - start} : {start: start}
+      if (self.peers.length) self._announce(message)
+
+      self._sync(null, cb)
+    }
+  })()
 }
 
 Feed.prototype._readyAndAppend = function (batch, cb) {
@@ -1296,7 +1355,7 @@ Feed.prototype.audit = function (cb) {
     invalid: 0
   }
 
-  this.ready(function (err) {
+  this._ready(function (err) {
     if (err) return cb(err)
 
     var block = 0
@@ -1306,12 +1365,23 @@ Feed.prototype.audit = function (cb) {
 
     function onnode (err, node) {
       if (err) return ondata(null, null)
-      self._storage.getData(block, ondata)
+      self._storage.getData(block, (_, data) => {
+        ondata(_, data)
+      })
 
-      function ondata (_, data) {
-        var verified = data && crypto.data(data).equals(node.hash)
+      async function ondata (_, data) {
+        var verified
+        var blockHash
+        if (data) {
+          blockHash = await crypto.data(data)
+          verified = blockHash.equals(node.hash)
+        } else {
+          verified = data
+        }
+
         if (verified) report.valid++
         else report.invalid++
+
         self.bitfield.set(block, verified)
         block++
         next()

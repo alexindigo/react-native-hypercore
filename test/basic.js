@@ -1,5 +1,5 @@
 var create = require('./helpers/create')
-var crypto = require('hypercore-crypto')
+var crypto = require('../packages/react-native-hypercore-crypto')
 var tape = require('tape')
 var hypercore = require('../')
 var ram = require('random-access-memory')
@@ -114,8 +114,8 @@ tape('rootHashes', function (t) {
   })
 })
 
-tape('pass in secret key', function (t) {
-  var keyPair = crypto.keyPair()
+tape('pass in secret key', async function (t) {
+  var keyPair = await crypto.keyPair()
   var secretKey = keyPair.secretKey
   var key = keyPair.publicKey
 

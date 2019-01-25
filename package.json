@@ -1,7 +1,7 @@
 {
   "name": "hypercore",
   "version": "6.22.4",
-  "description": "Hypercore is a secure, distributed append-only log",
+  "description": "React Native version of the Hypercore module – a secure, distributed append-only log.",
   "main": "index.js",
   "dependencies": {
     "array-lru": "^1.1.0",
@@ -15,8 +15,6 @@
     "fast-bitfield": "^1.2.2",
     "flat-tree": "^1.6.0",
     "from2": "^2.3.0",
-    "hypercore-crypto": "^1.0.0",
-    "hypercore-protocol": "^6.4.1",
     "inherits": "^2.0.3",
     "inspect-custom-symbol": "^1.1.0",
     "last-one-wins": "^1.0.4",
@@ -41,7 +39,8 @@
     "tape": "^4.6.3"
   },
   "scripts": {
-    "test": "standard && tape test/*.js",
+    "lint": "standard",
+    "test": "tape test/*.js",
     "bench": "cd bench && ./all.sh"
   },
   "repository": {
