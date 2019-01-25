@@ -1001,6 +1001,14 @@ progress@^1.1.8:
   resolved "https://registry.yarnpkg.com/progress/-/progress-1.1.8.tgz#e260c78f6161cdd9b0e56cc3e0a85de17c7a57be"
   integrity sha1-4mDHj2Fhzdmw5WzD4Khd4Xx6V74=
 
+protocol-buffers-encodings@^1.1.0:
+  version "1.1.0"
+  resolved "https://registry.yarnpkg.com/protocol-buffers-encodings/-/protocol-buffers-encodings-1.1.0.tgz#f3905631106669b85381bad47a336add7d206873"
+  integrity sha512-SmjEuAf3hc3h3rWZ6V1YaaQw2MNJWK848gLJgzx/sefOJdNLujKinJVXIS0q2cBQpQn2Q32TinawZyDZPzm4kQ==
+  dependencies:
+    signed-varint "^2.0.1"
+    varint "^5.0.0"
+
 random-access-file@^2.0.1:
   version "2.0.1"
   resolved "https://registry.yarnpkg.com/random-access-file/-/random-access-file-2.0.1.tgz#dc22de79270e9a84cb36a2419b759725930dcaeb"
@@ -1139,6 +1147,13 @@ shuffle-array@^1.0.1:
   resolved "https://registry.yarnpkg.com/shuffle-array/-/shuffle-array-1.0.1.tgz#c4ff3cfe74d16f93730592301b25e6577b12898b"
   integrity sha1-xP88/nTRb5NzBZIwGyXmV3sSiYs=
 
+signed-varint@^2.0.1:
+  version "2.0.1"
+  resolved "https://registry.yarnpkg.com/signed-varint/-/signed-varint-2.0.1.tgz#50a9989da7c98c2c61dad119bc97470ef8528129"
+  integrity sha1-UKmYnafJjCxh2tEZvJdHDvhSgSk=
+  dependencies:
+    varint "~5.0.0"
+
 siphash24@^1.0.1:
   version "1.1.1"
   resolved "https://registry.yarnpkg.com/siphash24/-/siphash24-1.1.1.tgz#94ad021a2b2c62de381b546ee02df0cf778acd50"
@@ -1178,6 +1193,11 @@ sodium-universal@^2.0.0:
     sodium-javascript "~0.5.0"
   optionalDependencies:
     sodium-native "^2.0.0"
+
+sorted-indexof@^1.0.0:
+  version "1.0.0"
+  resolved "https://registry.yarnpkg.com/sorted-indexof/-/sorted-indexof-1.0.0.tgz#17c742ff7cf187e2f59a15df9b81f17a62ce0899"
+  integrity sha1-F8dC/3zxh+L1mhXfm4HxemLOCJk=
 
 sparse-bitfield@^3.0.0:
   version "3.0.3"
@@ -1386,6 +1406,11 @@ varint@^4.0.0:
   version "4.0.1"
   resolved "https://registry.yarnpkg.com/varint/-/varint-4.0.1.tgz#490829b942d248463b2b35097995c3bf737198e9"
   integrity sha1-SQgpuULSSEY7KzUJeZXDv3NxmOk=
+
+varint@^5.0.0, varint@~5.0.0:
+  version "5.0.0"
+  resolved "https://registry.yarnpkg.com/varint/-/varint-5.0.0.tgz#d826b89f7490732fabc0c0ed693ed475dcb29ebf"
+  integrity sha1-2Ca4n3SQcy+rwMDtaT7Uddyynr8=
 
 wordwrap@~1.0.0:
   version "1.0.0"
